@@ -28,6 +28,7 @@ struct  testOpts {
     const char *testFunc; // by switch -R<name>
     const char *reorder; // by switch -P<name>
     int lda; // by switch -lda<int>
+    int batch_size;
 };
 
 double vec_norminf(int n, const double *x)

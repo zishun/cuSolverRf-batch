@@ -31,6 +31,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <assert.h>
+#include <time.h>
 
 #include "cusolverSp.h"
 #include "cusolverRf.h"
@@ -65,6 +66,7 @@ void UsageRF(void)
     printf( "              symrcm (Reverse Cuthill-McKee)\n");
     printf( "              symamd (Approximate Minimum Degree)\n");
     printf( "-file=<filename> : filename containing a matrix in MM format\n");
+    printf( "-bs=<batch_size> : normally 32 - 128, default=32 \n");
     printf( "-device=<device_id> : <device_id> if want to run on specific GPU\n");
 
     exit( 0 );
@@ -118,6 +120,22 @@ void parseCommandLineArguments(int argc, char *argv[], struct testOpts &opts)
             UsageRF();
         }
     }
+
+    if (checkCmdLineFlag(argc, (const char **)argv, "bs"))
+    {
+        char *batch_size = 0;
+        getCmdLineArgumentString(argc, (const char **)argv, "bs", &batch_size);
+
+        if (batch_size)
+        {
+            opts.batch_size = atoi(batch_size);
+        }
+        else
+        {
+            printf("\nIncorrect batch size passed to -bs \n ");
+            UsageRF();
+        }
+    }
 }
 
 int main (int argc, char *argv[])
@@ -131,8 +149,10 @@ int main (int argc, char *argv[])
 
     csrluInfoHost_t info = NULL; // opaque info structure for LU with parital pivoting
 
+    int batchSize = 32;
     int rowsA = 0; // number of rows of A
     int colsA = 0; // number of columns of A
+    int N     = 0; // n = rowsA = colsA
     int nnzA  = 0; // number of nonzeros of A
     int baseA = 0; // base index in CSR format
                    // cusolverRf only works for base-0
@@ -144,6 +164,14 @@ int main (int argc, char *argv[])
     int *h_csrRowPtrA = NULL; // <int> n+1 
     int *h_csrColIndA = NULL; // <int> nnzA 
     double *h_csrValA = NULL; // <double> nnzA 
+    //array of pointers to the values of each matrix in the batch (of size
+    //batchSize) on the host
+    double **h_A_array = NULL;
+    //For example, if h_A_batch is the array (of size batchSize*nnzA) containing 
+    //the values of each matrix in the batch written contiguosly one matrix  
+    //after another on the host, then h_A_array[j] = &h_A_batch[nnzA*j];
+    //for j=0,...,batchSize-1.
+    double *h_A_batch=NULL; 
 
     int *h_Qreorder = NULL; // <int> n
                             // reorder to reduce zero fill-in
@@ -157,6 +185,11 @@ int main (int argc, char *argv[])
     double *h_x = NULL; // <double> n,  x = A \ b
     double *h_b = NULL; // <double> n, b = ones(m,1)
     double *h_r = NULL; // <double> n, r = b - A*x
+    //array (of size batchSize*n*nrhs) containing the values of each rhs in 
+    //the batch written contiguously one rhs after another on the host
+    //nrhs is # of rhs for each system (currently only =1 is supported) 
+    double *h_X_batch = NULL;
+    double **h_X_array = NULL;
 
     // solve B*(Qx) = Q*b
     double *h_xhat = NULL; // <double> n, Q*x_hat = x
@@ -194,15 +227,30 @@ int main (int argc, char *argv[])
     int *d_csrRowPtrA = NULL; // <int> n+1
     int *d_csrColIndA = NULL; // <int> nnzA
     double *d_csrValA = NULL; // <double> nnzA
+    
+    //array of pointers to the values of each matrix in the batch (of size
+    //batchSize) on the device
+    double **d_A_array=NULL;
+    //For example, if d_A_batch is the array (of size batchSize*nnzA) containing 
+    //the values of each matrix in the batch written contiguosly one matrix  
+    //after another on the device, then d_A_array[j] = &d_A_batch[nnzA*j];
+    //for j=0,...,batchSize-1.
+    double *d_A_batch=NULL; 
+
     double *d_x = NULL; // <double> n, x = A \ b 
     double *d_b = NULL; // <double> n, a copy of h_b
     double *d_r = NULL; // <double> n, r = b - A*x
+
+    //array (of size batchSize*n*nrhs) containing the values of each rhs in 
+    //the batch written contiguously one rhs after another on the device
+    double *d_X_batch = NULL;
+    double **d_X_array = NULL;
 
     int *d_P = NULL; // <int> n, P*A*Q^T = L*U
     int *d_Q = NULL; // <int> n 
   
     double *d_T = NULL; // working space in cusolverRfSolve
-                        // |d_T| = n * nrhs  
+                        // |d_T| = 2*batchSize*n*nrhs
 
     // the constants used in residual evaluation, r = b - A*x
     const double minus_one = -1.0;
@@ -247,6 +295,11 @@ int main (int argc, char *argv[])
 
     findCudaDevice(argc, (const char **)argv);
 
+    if (opts.batch_size > 0)
+    {
+        batchSize = opts.batch_size;
+    }
+
     if (opts.sparse_mat_filename == NULL)
     {
         opts.sparse_mat_filename =  sdkFindFilePath("lap2D_5pt_n100.mtx", argv[0]);
@@ -287,7 +340,16 @@ int main (int argc, char *argv[])
         baseA = 0;
     }
 
+    N = rowsA;
     printf("sparse matrix A is %d x %d with %d nonzeros, base=%d\n", rowsA, colsA, nnzA, baseA);
+
+    // setup batch of A
+    h_A_array = (double**)malloc(sizeof(double*)*batchSize);
+    h_A_batch = (double*)malloc(sizeof(double)*batchSize*nnzA);
+    for (int i = 0; i < batchSize; ++i)
+    {
+        memcpy(&h_A_batch[i*nnzA], h_csrValA, sizeof(double)*nnzA);
+    }
 
     checkCudaErrors(cusolverSpCreate(&cusolverSpH));
     checkCudaErrors(cusparseCreate(&cusparseH));
@@ -316,6 +378,8 @@ int main (int argc, char *argv[])
     h_mapBfromA  = (int*   )malloc(sizeof(int)*nnzA);
 
     h_x    = (double*)malloc(sizeof(double)*colsA);
+    h_X_array = (double**)malloc(sizeof(double*)*batchSize);
+    h_X_batch = (double*)malloc(sizeof(double)*batchSize*N);
     h_b    = (double*)malloc(sizeof(double)*rowsA);
     h_r    = (double*)malloc(sizeof(double)*rowsA);
     h_xhat = (double*)malloc(sizeof(double)*colsA);
@@ -337,18 +401,39 @@ int main (int argc, char *argv[])
     checkCudaErrors(cudaMalloc((void **)&d_csrRowPtrA, sizeof(int)*(rowsA+1)));
     checkCudaErrors(cudaMalloc((void **)&d_csrColIndA, sizeof(int)*nnzA));
     checkCudaErrors(cudaMalloc((void **)&d_csrValA   , sizeof(double)*nnzA));
+    checkCudaErrors(cudaMalloc((void **)&d_A_array   , sizeof(double*)*batchSize));
+    checkCudaErrors(cudaMalloc((void **)&d_A_batch   , sizeof(double)*batchSize*nnzA));
+    for (int i = 0; i < batchSize; ++i)
+    {
+        h_A_array[i] = &(d_A_batch[i*nnzA]);
+    }
+    checkCudaErrors(cudaMemcpy(d_A_array, h_A_array, batchSize * sizeof(double*), cudaMemcpyHostToDevice));
+
     checkCudaErrors(cudaMalloc((void **)&d_x, sizeof(double)*colsA));
+    checkCudaErrors(cudaMalloc((void **)&d_X_array, sizeof(double*)*batchSize));
+    checkCudaErrors(cudaMalloc((void **)&d_X_batch, sizeof(double)*batchSize*N));
+    for (int i = 0; i < batchSize; ++i)
+    {
+        h_X_array[i] = &(d_X_batch[i*rowsA]);
+    }
+    checkCudaErrors(cudaMemcpy(d_X_array, h_X_array, batchSize * sizeof(double*), cudaMemcpyHostToDevice));
+
     checkCudaErrors(cudaMalloc((void **)&d_b, sizeof(double)*rowsA));
     checkCudaErrors(cudaMalloc((void **)&d_r, sizeof(double)*rowsA));
     checkCudaErrors(cudaMalloc((void **)&d_P, sizeof(int)*rowsA));
     checkCudaErrors(cudaMalloc((void **)&d_Q, sizeof(int)*colsA));
-    checkCudaErrors(cudaMalloc((void **)&d_T, sizeof(double)*rowsA*1));
+    checkCudaErrors(cudaMalloc((void **)&d_T, sizeof(double)*rowsA*2*batchSize));
 
-    printf("step 1.2: set right hand side vector (b) to 1\n");
+    printf("step 1.2: set random right hand side vector (b) in range -1 to 1\n");
     for(int row = 0 ; row < rowsA ; row++){
         h_b[row] = 1.0;
     }
-
+    srand(time(NULL));
+    for(int i = 0; i < batchSize*colsA; ++i)
+    {
+        h_X_batch[i] = (double)rand()/RAND_MAX*2.0-1.0;
+    }
+    
     printf("step 2: reorder the matrix to reduce zero fill-in\n");
     printf("        Q = symrcm(A) or Q = symamd(A) \n");
     start = second();
@@ -629,9 +714,14 @@ int main (int argc, char *argv[])
     start = second();
     start = second();
 
-    checkCudaErrors(cusolverRfSetupHost(
+    for (int i = 0; i < batchSize; ++i)
+    {
+        h_A_array[i] = &(h_A_batch[batchSize*i]);
+    }
+    checkCudaErrors(cusolverRfBatchSetupHost(
+        batchSize,
         rowsA, nnzA, 
-        h_csrRowPtrA, h_csrColIndA, h_csrValA,
+        h_csrRowPtrA, h_csrColIndA, h_A_array,
         nnzL, 
         h_csrRowPtrL, h_csrColIndL, h_csrValL, 
         nnzU, 
@@ -645,21 +735,23 @@ int main (int argc, char *argv[])
     time_rf_assemble = stop - start;
 
     printf("step 10: analyze to extract parallelism \n");
-    checkCudaErrors(cusolverRfAnalyze(cusolverRfH));
+    checkCudaErrors(cusolverRfBatchAnalyze(cusolverRfH));
 
     printf("step 11: import A to cusolverRf \n");
     checkCudaErrors(cudaMemcpy(d_csrRowPtrA, h_csrRowPtrA, sizeof(int)*(rowsA+1), cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_csrColIndA, h_csrColIndA, sizeof(int)*nnzA     , cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_csrValA   , h_csrValA   , sizeof(double)*nnzA  , cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_A_batch   , h_A_batch  , sizeof(double)*batchSize*nnzA  , cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_P, h_P, sizeof(int)*rowsA, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_Q, h_Q, sizeof(int)*colsA, cudaMemcpyHostToDevice));
 
     start = second();
     start = second();
 
-    checkCudaErrors(cusolverRfResetValues(
+    checkCudaErrors(cusolverRfBatchResetValues(
+        batchSize,
         rowsA,nnzA,
-        d_csrRowPtrA, d_csrColIndA, d_csrValA,
+        d_csrRowPtrA, d_csrColIndA, d_A_array,
         d_P,
         d_Q,
         cusolverRfH));
@@ -672,50 +764,56 @@ int main (int argc, char *argv[])
     start = second();
     start = second();
 
-    checkCudaErrors(cusolverRfRefactor(cusolverRfH));
+    checkCudaErrors(cusolverRfBatchRefactor(cusolverRfH));
 
     checkCudaErrors(cudaDeviceSynchronize());
     stop = second();
     time_rf_refactor = stop - start;
 
     printf("step 13: solve A*x = b \n");
-    checkCudaErrors(cudaMemcpy(d_x, h_b, sizeof(double)*rowsA, cudaMemcpyHostToDevice));
+    //checkCudaErrors(cudaMemcpy(d_x, h_b, sizeof(double)*rowsA, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_X_batch, h_X_batch, sizeof(double)*batchSize*rowsA, cudaMemcpyHostToDevice));
 
     start = second();
     start = second();
 
-    checkCudaErrors(cusolverRfSolve(cusolverRfH, d_P, d_Q, 1, d_T, rowsA, d_x, rowsA));
+    checkCudaErrors(cusolverRfBatchSolve(cusolverRfH, d_P, d_Q, 1, d_T, rowsA, d_X_array, rowsA));
 
     checkCudaErrors(cudaDeviceSynchronize());
     stop = second();
     time_rf_solve = stop - start;
 
     printf("step 14: evaluate residual r = b - A*x (result on GPU)\n");
-    checkCudaErrors(cudaMemcpy(d_r, h_b, sizeof(double)*rowsA, cudaMemcpyHostToDevice));
+    //checkCudaErrors(cudaMemcpy(d_r, h_b, sizeof(double)*rowsA, cudaMemcpyHostToDevice));
+for (int i=0; i < batchSize; ++i)
+    {
+        checkCudaErrors(cudaMemcpy(d_r, &h_X_batch[i*colsA], sizeof(double)*rowsA, cudaMemcpyHostToDevice));
 
-    checkCudaErrors(cusparseDcsrmv(cusparseH,
-        CUSPARSE_OPERATION_NON_TRANSPOSE,
-        rowsA,
-        colsA,
-        nnzA,
-        &minus_one,
-        descrA,
-        d_csrValA,
-        d_csrRowPtrA,
-        d_csrColIndA,
-        d_x,
-        &one,
-        d_r));
+        // todo: cusparseSpMM
+        checkCudaErrors(cusparseDcsrmv(cusparseH,
+            CUSPARSE_OPERATION_NON_TRANSPOSE,
+            rowsA,
+            colsA,
+            nnzA,
+            &minus_one,
+            descrA,
+            d_csrValA,
+            d_csrRowPtrA,
+            d_csrColIndA,
+            &d_X_batch[i*colsA],
+            &one,
+            d_r));
 
-    checkCudaErrors(cudaMemcpy(h_x, d_x, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
-    checkCudaErrors(cudaMemcpy(h_r, d_r, sizeof(double)*rowsA, cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(h_x, &d_X_batch[i*colsA], sizeof(double)*colsA, cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(h_r, d_r, sizeof(double)*rowsA, cudaMemcpyDeviceToHost));
 
-    x_inf = vec_norminf(colsA, h_x);
-    r_inf = vec_norminf(rowsA, h_r);
-    printf("(GPU) |b - A*x| = %E \n", r_inf);
-    printf("(GPU) |A| = %E \n", A_inf);
-    printf("(GPU) |x| = %E \n", x_inf);
-    printf("(GPU) |b - A*x|/(|A|*|x|) = %E \n", r_inf/(A_inf * x_inf));
+        x_inf = vec_norminf(colsA, h_x);
+        r_inf = vec_norminf(rowsA, h_r);
+        //printf("(GPU) |b - A*x| = %E ", r_inf);
+        //printf("(GPU) |A| = %E \n", A_inf);
+        //printf("(GPU) |x| = %E \n", x_inf);
+        printf("(GPU) |b - A*x|/(|A|*|x|) = %E \n", r_inf/(A_inf * x_inf));
+    }
 
     printf("===== statistics \n");
     printf(" nnz(A) = %d, nnz(L+U) = %d, zero fill-in ratio = %f\n", 
@@ -733,7 +831,7 @@ int main (int argc, char *argv[])
     printf(" cusolverRf assemble : %f sec\n", time_rf_assemble);
     printf(" cusolverRf reset    : %f sec\n", time_rf_reset);
     printf(" cusolverRf refactor : %f sec\n", time_rf_refactor);
-    printf(" cusolverRf solve    : %f sec\n", time_rf_solve);
+    printf(" cusolverRf solve    : %f sec\n", time_rf_solve/batchSize);
 
     if (cusolverRfH) { checkCudaErrors(cusolverRfDestroy(cusolverRfH)); }
     if (cusolverSpH) { checkCudaErrors(cusolverSpDestroy(cusolverSpH)); }
