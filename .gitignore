@@ -1,3 +1,6 @@
+cuSolverRf
+cuSolverRfBatch
+
 # Prerequisites
 *.d
 

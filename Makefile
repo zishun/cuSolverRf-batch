@@ -300,9 +300,7 @@ endif
 ################################################################################
 
 # Target rules
-all: build
-
-build: cuSolverRf
+all: cuSolverRf cuSolverRfBatch
 
 check.deps:
 ifeq ($(SAMPLE_ENABLED),0)
@@ -312,6 +310,9 @@ else
 endif
 
 cuSolverRf.o:cuSolverRf.cpp
+	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
+
+cuSolverRfBatch.o:cuSolverRfBatch.cpp
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
 mmio.c.o:mmio.c
@@ -325,11 +326,11 @@ cuSolverRf: cuSolverRf.o mmio.c.o mmio_wrapper.o
 	#$(EXEC) mkdir -p ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
 	#$(EXEC) cp $@ ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
 
-run: build
-	$(EXEC) ./cuSolverRf
+cuSolverRfBatch: cuSolverRfBatch.o mmio.c.o mmio_wrapper.o
+	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
 
 clean:
-	rm -f cuSolverRf cuSolverRf.o mmio.c.o mmio_wrapper.o
+	rm -f cuSolverRf cuSolverRfBatch cuSolverRf.o cuSolverRfBatch.o mmio.c.o mmio_wrapper.o
 	#rm -rf ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)/cuSolverRf
 
 clobber: clean
