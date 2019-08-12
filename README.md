@@ -7,7 +7,7 @@ In this repository, a complete example is provided to demonstrate the usage of r
 ```cusolverRfBatchAnalyze```, 
 ```cusolverRfBatchResetValues```, 
 ```cusolverRfBatchRefactor```, 
-and ```cusolverRfBatchSolve()```.
+and ```cusolverRfBatchSolve```.
 This project is developed based on the unbatched refactorization example from Nvidia's official CUDA samples ```7_CUDALibraries/cuSolverRf```.
 
 A 30x speedup was observed with the commands below.
