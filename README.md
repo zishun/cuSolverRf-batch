@@ -12,7 +12,7 @@ In this repository, a complete example is provided to demonstrate the usage of r
 * and ```cusolverRfBatchSolve```.
 
 ## Build
-This project is developed based on the unbatched refactorization example ```7_CUDALibraries/cuSolverRf``` from NVIDIA's official CUDA samples. You may modify ```CUDA_PATH``` in ```Makefile``` to build this project.
+This project is developed based on the unbatched refactorization example ```7_CUDALibraries/cuSolverRf``` from NVIDIA's official CUDA samples for Linux. You may modify ```CUDA_PATH``` in ```Makefile``` to build this project.
 
 ## Usage
 A 30x speedup was observed with the commands below.
