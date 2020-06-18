@@ -2,7 +2,7 @@
 
 > A complete example of batched refactorization in CUDA cuSOLVER.
 
-[Batched refactorization module](https://docs.nvidia.com/cuda/archive/10.1/cusolver/index.html#glu-reference) in cuSOLVER provides an efficient method to solve batches of linear systems with fixed left hand side sparse matrix (or matrices with fixed sparsity pattern but varying cofficients) and varying right hand sides, based on LU decomposition.
+[Batched refactorization module](https://docs.nvidia.com/cuda/archive/10.1/cusolver/index.html#glu-reference) in cuSOLVER provides an efficient method to solve batches of linear systems with fixed left-hand side sparse matrix (or matrices with fixed sparsity pattern but varying coefficients) and varying right-hand sides, based on LU decomposition.
 Only some partially completed [code snippets](https://docs.nvidia.com/cuda/archive/10.1/cusolver/index.html#cuSolverRFbatch-example1) can be found in the official documentation (as of CUDA 10.1) that are related to it.
 In this repository, a complete example is provided to demonstrate the usage of related functions including 
 * ```cusolverRfBatchSetupHost```, 
