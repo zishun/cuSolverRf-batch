@@ -1,5 +1,7 @@
 cuSolverRf
 cuSolverRfBatch
+build/
+*.user
 
 # Prerequisites
 *.d
