@@ -500,19 +500,37 @@ int main (int argc, char *argv[])
     checkCudaErrors(cudaMemcpy(d_r, h_b, sizeof(double)*rowsA, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_x, h_x, sizeof(double)*colsA, cudaMemcpyHostToDevice));
 
-    checkCudaErrors(cusparseDcsrmv(cusparseH,
-        CUSPARSE_OPERATION_NON_TRANSPOSE,
-        rowsA,
-        colsA,
-        nnzA,
-        &minus_one,
-        descrA,
-        d_csrValA,
-        d_csrRowPtrA,
-        d_csrColIndA,
-        d_x,
-        &one,
-        d_r));
+    /* Wrap raw data into cuSPARSE generic API objects */
+    cusparseSpMatDescr_t matA = NULL;
+    if (baseA)
+    {
+        checkCudaErrors(cusparseCreateCsr(
+        &matA, rowsA, colsA, nnzA, d_csrRowPtrA, d_csrColIndA, d_csrValA, CUSPARSE_INDEX_32I,
+        CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ONE, CUDA_R_64F));
+    }
+    else
+    {
+        checkCudaErrors(cusparseCreateCsr(
+        &matA, rowsA, colsA, nnzA, d_csrRowPtrA, d_csrColIndA, d_csrValA, CUSPARSE_INDEX_32I,
+        CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F));
+    }
+
+    cusparseDnVecDescr_t vecx = NULL;
+    checkCudaErrors(cusparseCreateDnVec(&vecx, colsA, d_x, CUDA_R_64F));
+    cusparseDnVecDescr_t vecAx = NULL;
+    checkCudaErrors(cusparseCreateDnVec(&vecAx, rowsA, d_r, CUDA_R_64F));
+
+    /* Allocate workspace for cuSPARSE */
+    size_t bufferSize = 0;
+    checkCudaErrors(cusparseSpMV_bufferSize(
+        cusparseH, CUSPARSE_OPERATION_NON_TRANSPOSE, &minus_one, matA, vecx,
+        &one, vecAx, CUDA_R_64F, CUSPARSE_MV_ALG_DEFAULT, &bufferSize));
+    void *buffer = NULL;
+    checkCudaErrors(cudaMalloc(&buffer, bufferSize));
+
+    checkCudaErrors(cusparseSpMV(
+        cusparseH, CUSPARSE_OPERATION_NON_TRANSPOSE, &minus_one, matA, vecx,
+        &one, vecAx, CUDA_R_64F, CUSPARSE_MV_ALG_DEFAULT, &buffer));
 
     checkCudaErrors(cudaMemcpy(h_r, d_r, sizeof(double)*rowsA, cudaMemcpyDeviceToHost));
 
@@ -693,19 +711,9 @@ int main (int argc, char *argv[])
     printf("step 14: evaluate residual r = b - A*x (result on GPU)\n");
     checkCudaErrors(cudaMemcpy(d_r, h_b, sizeof(double)*rowsA, cudaMemcpyHostToDevice));
 
-    checkCudaErrors(cusparseDcsrmv(cusparseH,
-        CUSPARSE_OPERATION_NON_TRANSPOSE,
-        rowsA,
-        colsA,
-        nnzA,
-        &minus_one,
-        descrA,
-        d_csrValA,
-        d_csrRowPtrA,
-        d_csrColIndA,
-        d_x,
-        &one,
-        d_r));
+    checkCudaErrors(cusparseSpMV(
+        cusparseH, CUSPARSE_OPERATION_NON_TRANSPOSE, &minus_one, matA, vecx,
+        &one, vecAx, CUDA_R_64F, CUSPARSE_MV_ALG_DEFAULT, &buffer));
 
     checkCudaErrors(cudaMemcpy(h_x, d_x, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaMemcpy(h_r, d_r, sizeof(double)*rowsA, cudaMemcpyDeviceToHost));
@@ -741,6 +749,10 @@ int main (int argc, char *argv[])
     if (stream     ) { checkCudaErrors(cudaStreamDestroy(stream)); }
     if (descrA     ) { checkCudaErrors(cusparseDestroyMatDescr(descrA)); }
     if (info       ) { checkCudaErrors(cusolverSpDestroyCsrluInfoHost(info)); }
+
+    if (matA       ) { checkCudaErrors(cusparseDestroySpMat(matA)); }
+    if (vecx       ) { checkCudaErrors(cusparseDestroyDnVec(vecx)); }
+    if (vecAx      ) { checkCudaErrors(cusparseDestroyDnVec(vecAx)); }
 
     if (h_csrValA   ) { free(h_csrValA); }
     if (h_csrRowPtrA) { free(h_csrRowPtrA); }

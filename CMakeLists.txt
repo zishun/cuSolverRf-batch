@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 
+if (UNIX)
+    set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)
+endif (UNIX)
+
 set(PROJECT_NAME cuSolverRfBatch)
 project (${PROJECT_NAME} LANGUAGES C CXX CUDA)
 
@@ -33,5 +37,4 @@ if (MSVC)
     add_compile_options("$<$<CONFIG:RELEASE>:/O2>")
 endif (MSVC)
 if (UNIX)
-    # todo
 endif (UNIX)
